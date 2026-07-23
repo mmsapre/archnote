@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org">
+
+<head>
+
+    <meta charset="UTF-8"/>
+
+    <title>
+        MRD Configuration Studio
+    </title>
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1"/>
+
+    <link rel="stylesheet"
+          th:href="@{/css/app.css}"/>
+
+</head>
+
+<body>
+
+<div class="wrapper">
+
+    <!-- ========================= -->
+    <!-- HEADER                    -->
+    <!-- ========================= -->
+
+    <header class="topbar">
+
+        <div class="brand">
+
+            <div class="brandLogo">
+                M
+            </div>
+
+            <div>
+
+                <h2>
+                    MRD Configuration Studio
+                </h2>
+
+                <span>
+                    Metadata Driven Configuration
+                </span>
+
+            </div>
+
+        </div>
+
+        <div class="toolbar">
+
+            <button id="btnValidate">
+                ✔ Validate
+            </button>
+
+            <button id="btnSave">
+                💾 Save Draft
+            </button>
+
+            <button id="btnDownload">
+                ⬇ Download
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- ========================= -->
+    <!-- MAIN LAYOUT               -->
+    <!-- ========================= -->
+
+    <div class="container">
+
+        <!-- LEFT MENU -->
+
+        <aside class="sidebar">
+
+            <div class="menuTitle">
+
+                Configuration
+
+            </div>
+
+            <ul>
+
+                <li class="active">
+                    General
+                </li>
+
+                <li>
+                    Validation
+                </li>
+
+                <li>
+                    XPath
+                </li>
+
+                <li>
+                    JSONPath
+                </li>
+
+                <li>
+                    JSON Logic
+                </li>
+
+                <li>
+                    DSL Query
+                </li>
+
+                <li>
+                    Transformation
+                </li>
+
+                <li>
+                    Connector
+                </li>
+
+                <li>
+                    Workflow
+                </li>
+
+                <li>
+                    Preview
+                </li>
+
+            </ul>
+
+        </aside>
+
+
+        <!-- ========================= -->
+        <!-- CENTER CONTENT            -->
+        <!-- ========================= -->
+
+        <main class="content">
+
+            <div class="pageTitle">
+
+                <h1>
+
+                    General Configuration
+
+                </h1>
+
+                <p>
+
+                    Configure runtime behaviour of MRD
+                    Distribution Engine
+
+                </p>
+
+            </div>
+
+
+            <!-- Card -->
+
+            <section class="card">
+
+                <h3>
+
+                    Configuration
+
+                </h3>
+
+                <div class="grid2">
+
+                    <div>
+
+                        <label>
+
+                            Configuration Name
+
+                        </label>
+
+                        <input
+                                id="configurationName"
+                                type="text">
+
+                    </div>
+
+                    <div>
+
+                        <label>
+
+                            Version
+
+                        </label>
+
+                        <input
+                                id="version"
+                                value="1.0.0"
+                                readonly>
+
+                    </div>
+
+                </div>
+
+                <label>
+
+                    Description
+
+                </label>
+
+                <textarea
+                        id="description">
+
+                </textarea>
+
+            </section>
+
+
+            <!-- Runtime -->
+
+            <section class="card">
+
+                <h3>
+
+                    Runtime
+
+                </h3>
+
+                <div class="grid2">
+
+                    <div>
+
+                        <label>
+
+                            Service
+
+                        </label>
+
+                        <select
+                                id="service">
+
+                        </select>
+
+                    </div>
+
+                    <div>
+
+                        <label>
+
+                            Domain
+
+                        </label>
+
+                        <select
+                                id="domain">
+
+                        </select>
+
+                    </div>
+
+                    <div>
+
+                        <label>
+
+                            Strategy
+
+                        </label>
+
+                        <select
+                                id="strategy">
+
+                        </select>
+
+                    </div>
+
+                    <div>
+
+                        <label>
+
+                            Rule Path
+
+                        </label>
+
+                        <select
+                                id="rulePath">
+
+                        </select>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+
+            <!-- Flags -->
+
+            <section class="card">
+
+                <h3>
+
+                    Runtime Flags
+
+                </h3>
+
+                <div class="toggleGrid">
+
+                    <label>
+
+                        <input
+                                type="checkbox"
+                                id="cmf">
+
+                        CMF Enabled
+
+                    </label>
+
+                    <label>
+
+                        <input
+                                checked
+                                type="checkbox"
+                                id="validation">
+
+                        Validation Enabled
+
+                    </label>
+
+                    <label>
+
+                        <input
+                                type="checkbox"
+                                id="bypass">
+
+                        Bypass Validation
+
+                    </label>
+
+                </div>
+
+            </section>
+
+
+            <!-- Policy -->
+
+            <section class="card">
+
+                <h3>
+
+                    Policy Mode
+
+                </h3>
+
+                <div class="radioGroup">
+
+                    <label>
+
+                        <input
+                                checked
+                                type="radio"
+                                name="policy">
+
+                        Policy Database
+
+                    </label>
+
+                    <label>
+
+                        <input
+                                type="radio"
+                                name="policy">
+
+                        Inline
+
+                    </label>
+
+                    <label>
+
+                        <input
+                                type="radio"
+                                name="policy">
+
+                        Remote API
+
+                    </label>
+
+                </div>
+
+            </section>
+
+        </main>
+
+
+        <!-- ========================= -->
+        <!-- RIGHT PANEL               -->
+        <!-- ========================= -->
+
+        <aside class="preview">
+
+            <div class="previewHeader">
+
+                <h3>
+
+                    Generated JSON
+
+                </h3>
+
+                <button id="copy">
+
+                    Copy
+
+                </button>
+
+            </div>
+
+            <pre id="jsonPreview">
+
+{
+
+}
+
+            </pre>
+
+        </aside>
+
+    </div>
+
+</div>
+
+<script th:src="@{/js/app.js}"></script>
+
+<script th:src="@{/js/api.js}"></script>
+
+<script th:src="@{/js/general.js}"></script>
+
+</body>
+
+</html>
