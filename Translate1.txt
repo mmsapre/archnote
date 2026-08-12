@@ -1,0 +1,184 @@
+@SuppressWarnings("unchecked")
+private String translateWithClause(
+        Map<String, Object> normalizedRequest,
+        List<Map<String, Object>> ctes) {
+
+    if (ctes == null || ctes.isEmpty()) {
+
+        Map<String, Object> query =
+                new LinkedHashMap<>(normalizedRequest);
+
+        query.remove("with");
+
+        return translateQuery(
+                query,
+                Collections.emptyList());
+    }
+
+    StringBuilder sql =
+            new StringBuilder("WITH ");
+
+    for (int i = 0; i < ctes.size(); i++) {
+
+        Map<String, Object> cte =
+                ctes.get(i);
+
+        if (cte == null) {
+            throw new IllegalArgumentException(
+                    "CTE definition cannot be null");
+        }
+
+        /*
+         * Example:
+         *
+         * {
+         *   "name": "base",
+         *   "query": {
+         *      "source": [...],
+         *      "from": {...},
+         *      "joins": [...],
+         *      "query": {...}
+         *   }
+         * }
+         */
+
+        Object nameObject =
+                cte.get("name");
+
+        if (!(nameObject instanceof String)
+                || ((String) nameObject).isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "CTE name is required");
+        }
+
+        String cteName =
+                ((String) nameObject).trim();
+
+        Object queryObject =
+                cte.get("query");
+
+        if (!(queryObject instanceof Map)) {
+
+            throw new IllegalArgumentException(
+                    "CTE query is required for: "
+                            + cteName);
+        }
+
+        Map<String, Object> cteQuery =
+                (Map<String, Object>) queryObject;
+
+        /*
+         * Generate:
+         *
+         * base AS (
+         *     SELECT ...
+         *     FROM ...
+         *     JOIN ...
+         *     WHERE ...
+         * )
+         */
+        String cteSql =
+                translateQuery(
+                        cteQuery,
+                        ctes);
+
+        if (i > 0) {
+            sql.append(", ");
+        }
+
+        sql.append(cteName)
+                .append(" AS (")
+                .append(cteSql)
+                .append(")");
+    }
+
+    /*
+     * The root request contains:
+     *
+     * {
+     *   "with": [...],
+     *   "source": [...],
+     *   "from": {
+     *      "table": "base",
+     *      "alias": "b"
+     *   },
+     *   "query": {...}
+     * }
+     *
+     * Remove only "with".
+     *
+     * Everything else remains exactly the same and therefore
+     * uses the existing DSL translator.
+     */
+    Map<String, Object> mainQuery =
+            new LinkedHashMap<>(normalizedRequest);
+
+    mainQuery.remove("with");
+
+    String mainSql =
+            translateQuery(
+                    mainQuery,
+                    ctes);
+
+    sql.append(" ")
+            .append(mainSql);
+
+    return sql.toString();
+}
+
+@SuppressWarnings("unchecked")
+public String translate(
+        Map<String, Object> queryRequest) {
+
+    Map<String, Object> normalizedRequest =
+            normalizeQueryRequest(queryRequest);
+
+    Object withObject =
+            normalizedRequest.get("with");
+
+    /*
+     * OLD REQUEST
+     *
+     * No WITH -> exact existing path.
+     */
+    if (withObject == null) {
+
+        return translateQuery(
+                normalizedRequest,
+                Collections.emptyList());
+    }
+
+    if (!(withObject instanceof List)) {
+
+        throw new IllegalArgumentException(
+                "'with' must be a list");
+    }
+
+    List<Map<String, Object>> ctes =
+            (List<Map<String, Object>>) withObject;
+
+    /*
+     * Treat:
+     *
+     * "with": []
+     *
+     * exactly like the old DSL.
+     */
+    if (ctes.isEmpty()) {
+
+        Map<String, Object> copy =
+                new LinkedHashMap<>(
+                        normalizedRequest);
+
+        copy.remove("with");
+
+        return translateQuery(
+                copy,
+                Collections.emptyList());
+    }
+
+    return translateWithClause(
+            normalizedRequest,
+            ctes);
+}
