@@ -1,0 +1,1178 @@
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.StringJoiner;
+
+@SuppressWarnings("unchecked")
+public class JsonToDslTranslator {
+
+    private final QueryValidator queryValidator;
+    private final TableConfig tableConfig;
+
+    public JsonToDslTranslator(
+            QueryValidator queryValidator,
+            TableConfig tableConfig) {
+
+        this.queryValidator = queryValidator;
+        this.tableConfig = tableConfig;
+    }
+
+    /*
+     * ============================================================
+     * MAIN ENTRY
+     *
+     * Existing request:
+     *   SELECT ...
+     *
+     * New request:
+     *   WITH base AS (...)
+     *   SELECT ...
+     *
+     * "with" is completely optional.
+     * ============================================================
+     */
+    public String translate(Map<String, Object> queryRequest) {
+
+        Map<String, Object> normalizedRequest =
+                normalizeQueryRequest(queryRequest);
+
+        /*
+         * BACKWARD COMPATIBLE:
+         *
+         * If there is no WITH, execute the existing translation.
+         */
+        if (!normalizedRequest.containsKey("with")
+                || normalizedRequest.get("with") == null) {
+
+            return translateQuery(
+                    normalizedRequest,
+                    Collections.emptySet());
+        }
+
+        Object withObject =
+                normalizedRequest.get("with");
+
+        if (!(withObject instanceof List)) {
+            throw new IllegalArgumentException(
+                    "'with' must be a list");
+        }
+
+        List<Map<String, Object>> ctes =
+                (List<Map<String, Object>>) withObject;
+
+        if (ctes.isEmpty()) {
+
+            Map<String, Object> copy =
+                    new LinkedHashMap<>(normalizedRequest);
+
+            copy.remove("with");
+
+            return translateQuery(
+                    copy,
+                    Collections.emptySet());
+        }
+
+        return translateWithClause(
+                normalizedRequest,
+                ctes);
+    }
+
+    /*
+     * ============================================================
+     * WITH
+     * ============================================================
+     */
+    private String translateWithClause(
+            Map<String, Object> request,
+            List<Map<String, Object>> ctes) {
+
+        Set<String> cteNames =
+                extractCteNames(ctes);
+
+        StringBuilder sql =
+                new StringBuilder("WITH ");
+
+        for (int i = 0; i < ctes.size(); i++) {
+
+            Map<String, Object> cte =
+                    ctes.get(i);
+
+            String name =
+                    getRequiredString(
+                            cte,
+                            "name");
+
+            validateIdentifier(name);
+
+            Object queryObject =
+                    cte.get("query");
+
+            if (!(queryObject instanceof Map)) {
+                throw new IllegalArgumentException(
+                        "CTE '" + name
+                                + "' must contain query");
+            }
+
+            Map<String, Object> cteQuery =
+                    (Map<String, Object>) queryObject;
+
+            sql.append(name)
+                    .append(" AS (")
+                    .append(
+                            translateQuery(
+                                    cteQuery,
+                                    cteNames))
+                    .append(")");
+
+            if (i < ctes.size() - 1) {
+                sql.append(", ");
+            }
+        }
+
+        /*
+         * Remove WITH before translating outer SELECT.
+         */
+        Map<String, Object> outer =
+                new LinkedHashMap<>(request);
+
+        outer.remove("with");
+
+        sql.append(" ")
+                .append(
+                        translateQuery(
+                                outer,
+                                cteNames));
+
+        return sql.toString();
+    }
+
+    /*
+     * ============================================================
+     * NORMAL SELECT TRANSLATION
+     *
+     * This is essentially your current translate() body.
+     * ============================================================
+     */
+    private String translateQuery(
+            Map<String, Object> queryRequest,
+            Set<String> cteNames) {
+
+        /*
+         * Existing QueryValidator knows configured physical tables.
+         *
+         * Do not ask it to validate a CTE name as a physical table.
+         */
+        if (!isFromCte(queryRequest, cteNames)) {
+
+            if (!queryValidator.validateQuery(queryRequest)) {
+
+                throw new IllegalArgumentException(
+                        "Invalid table, alias, or columns in the request.");
+            }
+        }
+
+        List<String> selectColumns =
+                extractSelectColumns(queryRequest);
+
+        if (selectColumns.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Missing source/select columns.");
+        }
+
+        String select =
+                String.join(",", selectColumns);
+
+        /*
+         * THIS is the only important CTE-aware FROM change.
+         */
+        String from =
+                handleFromClause(
+                        queryRequest,
+                        cteNames);
+
+        StringBuilder queryString =
+                new StringBuilder();
+
+        queryString
+                .append("SELECT ")
+                .append(select)
+                .append(" FROM ")
+                .append(from);
+
+        /*
+         * Existing query handling.
+         */
+        if (queryRequest.containsKey("query")) {
+
+            Map<String, Object> queryClause =
+                    (Map<String, Object>)
+                            queryRequest.get("query");
+
+            String where =
+                    handleQueryClause(queryClause);
+
+            if (where != null
+                    && !where.isBlank()) {
+
+                queryString
+                        .append(" WHERE ")
+                        .append(where);
+            }
+        }
+
+        /*
+         * Existing size.
+         */
+        if (queryRequest.containsKey("size")) {
+
+            int limit =
+                    parseLimit(
+                            queryRequest.get("size"));
+
+            queryString
+                    .append(" LIMIT ")
+                    .append(limit);
+
+        } else if (queryRequest.get("pagination")
+                instanceof Map) {
+
+            Map<String, Object> pagination =
+                    (Map<String, Object>)
+                            queryRequest.get("pagination");
+
+            if (pagination.get("limit") != null) {
+
+                int limit =
+                        parseLimit(
+                                pagination.get("limit"));
+
+                queryString
+                        .append(" LIMIT ")
+                        .append(limit);
+            }
+        }
+
+        /*
+         * Existing offset.
+         */
+        if (queryRequest.containsKey("offset")) {
+
+            int offset =
+                    parseOffset(
+                            queryRequest.get("offset"));
+
+            queryString
+                    .append(" OFFSET ")
+                    .append(offset);
+
+        } else if (queryRequest.get("pagination")
+                instanceof Map) {
+
+            Map<String, Object> pagination =
+                    (Map<String, Object>)
+                            queryRequest.get("pagination");
+
+            if (pagination.get("offset") != null) {
+
+                int offset =
+                        parseOffset(
+                                pagination.get("offset"));
+
+                queryString
+                        .append(" OFFSET ")
+                        .append(offset);
+            }
+        }
+
+        System.out.println(
+                "Query =========================");
+
+        System.out.println(
+                queryString);
+
+        System.out.println(
+                "End Query =====================");
+
+        return queryString.toString();
+    }
+
+    /*
+     * ============================================================
+     * FROM
+     *
+     * Based on your current screenshot.
+     *
+     * Existing:
+     *
+     * FROM schema.table alias
+     *
+     * New:
+     *
+     * FROM base b
+     *
+     * when base is a CTE.
+     * ============================================================
+     */
+    private String handleFromClause(
+            Map<String, Object> queryRequest,
+            Set<String> cteNames) {
+
+        String fromClause =
+                extractFromClause(queryRequest);
+
+        if (fromClause == null) {
+
+            throw new IllegalArgumentException(
+                    "Missing from clause in request.");
+        }
+
+        String tableName =
+                extractFromTableName(queryRequest);
+
+        boolean fromIsCte =
+                tableName != null
+                        && cteNames.contains(
+                        tableName.toLowerCase(
+                                Locale.ROOT));
+
+        StringBuilder joinClause =
+                new StringBuilder();
+
+        /*
+         * CTE:
+         *
+         * FROM base b
+         *
+         * Physical:
+         *
+         * FROM pmrd.t_account acc
+         */
+        if (fromIsCte) {
+
+            joinClause.append(fromClause);
+
+        } else {
+
+            joinClause
+                    .append(tableConfig.getSchema())
+                    .append(".")
+                    .append(fromClause);
+        }
+
+        /*
+         * Existing joins.
+         */
+        if (queryRequest.containsKey("joins")) {
+
+            List<Map<String, Object>> joins =
+                    (List<Map<String, Object>>)
+                            queryRequest.get("joins");
+
+            for (Map<String, Object> join : joins) {
+
+                String joinType =
+                        (String) join.get("type");
+
+                String joinTableName =
+                        (String) join.get("table");
+
+                String joinAlias =
+                        (String) join.get("alias");
+
+                String joinCondition =
+                        (String) join.get("on");
+
+                if (joinTableName == null
+                        || joinTableName.isBlank()) {
+
+                    throw new IllegalArgumentException(
+                            "Join table cannot be empty.");
+                }
+
+                if (joinCondition == null
+                        || joinCondition.isBlank()) {
+
+                    throw new IllegalArgumentException(
+                            "Join ON condition cannot be empty.");
+                }
+
+                /*
+                 * Is JOIN target another CTE?
+                 */
+                boolean joinIsCte =
+                        cteNames.contains(
+                                joinTableName.toLowerCase(
+                                        Locale.ROOT));
+
+                StringBuilder joinTable =
+                        new StringBuilder();
+
+                if (joinIsCte) {
+
+                    joinTable.append(
+                            joinTableName);
+
+                } else {
+
+                    joinTable
+                            .append(
+                                    tableConfig.getSchema())
+                            .append(".")
+                            .append(
+                                    joinTableName);
+                }
+
+                if (joinAlias != null
+                        && !joinAlias.isBlank()) {
+
+                    joinTable
+                            .append(" ")
+                            .append(joinAlias);
+                }
+
+                joinClause
+                        .append(" ")
+                        .append(
+                                normalizeJoinType(
+                                        joinType))
+                        .append(" JOIN ")
+                        .append(joinTable)
+                        .append(" ON ")
+                        .append(joinCondition);
+            }
+        }
+
+        return joinClause.toString();
+    }
+
+    /*
+     * ============================================================
+     * YOUR CURRENT extractFromClause()
+     *
+     * KEEP THIS.
+     *
+     * Screenshot:
+     *
+     * Object fromObject = queryRequest.get("from");
+     *
+     * String:
+     *   "from":"t_account"
+     *
+     * Object:
+     *   "from":{
+     *      "table":"t_account",
+     *      "alias":"acc"
+     *   }
+     * ============================================================
+     */
+    private String extractFromClause(
+            Map<String, Object> queryRequest) {
+
+        Object fromObject =
+                queryRequest.get("from");
+
+        if (fromObject instanceof String) {
+
+            return (String) fromObject;
+        }
+
+        if (fromObject instanceof Map) {
+
+            Map<String, Object> fromMap =
+                    (Map<String, Object>)
+                            fromObject;
+
+            String table =
+                    (String) fromMap.get("table");
+
+            String alias =
+                    (String) fromMap.get("alias");
+
+            if (table == null
+                    || table.isBlank()) {
+
+                return null;
+            }
+
+            return alias != null
+                    && !alias.isBlank()
+                    ? table + " " + alias
+                    : table;
+        }
+
+        return null;
+    }
+
+    /*
+     * ============================================================
+     * NEW SMALL HELPER
+     *
+     * Unlike extractFromClause(), this returns ONLY the table name.
+     *
+     * Needed to determine:
+     *
+     * physical table?
+     * OR
+     * CTE?
+     * ============================================================
+     */
+    private String extractFromTableName(
+            Map<String, Object> queryRequest) {
+
+        Object fromObject =
+                queryRequest.get("from");
+
+        if (fromObject instanceof String) {
+
+            String from =
+                    ((String) fromObject).trim();
+
+            /*
+             * Preserve compatibility if someone uses:
+             *
+             * "from":"t_account acc"
+             */
+            int space =
+                    from.indexOf(' ');
+
+            return space > 0
+                    ? from.substring(0, space)
+                    : from;
+        }
+
+        if (fromObject instanceof Map) {
+
+            Map<String, Object> fromMap =
+                    (Map<String, Object>)
+                            fromObject;
+
+            return (String)
+                    fromMap.get("table");
+        }
+
+        return null;
+    }
+
+    /*
+     * ============================================================
+     * CTE HELPERS
+     * ============================================================
+     */
+    private Set<String> extractCteNames(
+            List<Map<String, Object>> ctes) {
+
+        Set<String> names =
+                new HashSet<>();
+
+        for (Map<String, Object> cte : ctes) {
+
+            String name =
+                    getRequiredString(
+                            cte,
+                            "name");
+
+            validateIdentifier(name);
+
+            String normalized =
+                    name.toLowerCase(
+                            Locale.ROOT);
+
+            if (!names.add(normalized)) {
+
+                throw new IllegalArgumentException(
+                        "Duplicate CTE: " + name);
+            }
+        }
+
+        return names;
+    }
+
+    private boolean isFromCte(
+            Map<String, Object> request,
+            Set<String> cteNames) {
+
+        if (cteNames == null
+                || cteNames.isEmpty()) {
+
+            return false;
+        }
+
+        String table =
+                extractFromTableName(request);
+
+        return table != null
+                && cteNames.contains(
+                table.toLowerCase(
+                        Locale.ROOT));
+    }
+
+    /*
+     * ============================================================
+     * SELECT
+     *
+     * Matches the code visible in your screenshot.
+     * ============================================================
+     */
+    private List<String> extractSelectColumns(
+            Map<String, Object> queryRequest) {
+
+        /*
+         * Your earlier implementation had _source support.
+         */
+        Object legacySource =
+                queryRequest.get("_source");
+
+        if (legacySource instanceof List) {
+
+            List<String> columns =
+                    new ArrayList<>();
+
+            for (Object item :
+                    (List<?>) legacySource) {
+
+                if (item instanceof String
+                        && !((String) item).isBlank()) {
+
+                    columns.add(
+                            (String) item);
+                }
+            }
+
+            return columns;
+        }
+
+        Object source =
+                queryRequest.get("source");
+
+        if (!(source instanceof List)) {
+
+            return new ArrayList<>();
+        }
+
+        List<String> columns =
+                new ArrayList<>();
+
+        for (Object item :
+                (List<?>) source) {
+
+            /*
+             * Maintain support for simple string source.
+             */
+            if (item instanceof String) {
+
+                if (!((String) item).isBlank()) {
+
+                    columns.add(
+                            (String) item);
+                }
+
+                continue;
+            }
+
+            /*
+             * This matches your screenshot:
+             *
+             * {
+             *   "field":"acc.account_mrd_id"
+             * }
+             */
+            if (item instanceof Map) {
+
+                Object field =
+                        ((Map<?, ?>) item)
+                                .get("field");
+
+                if (field instanceof String
+                        && !((String) field)
+                        .isBlank()) {
+
+                    columns.add(
+                            (String) field);
+                }
+            }
+        }
+
+        return columns;
+    }
+
+    /*
+     * ============================================================
+     * QUERY
+     *
+     * Your screenshot:
+     *
+     * Map<String,Object> boolClause =
+     *      (Map<String,Object>)queryClause.get("bool");
+     *
+     * if bool contains must -> handleMustClause()
+     * ============================================================
+     */
+    private String handleQueryClause(
+            Map<String, Object> queryClause) {
+
+        if (queryClause == null) {
+            return "";
+        }
+
+        Object boolObject =
+                queryClause.get("bool");
+
+        if (!(boolObject instanceof Map)) {
+            return "";
+        }
+
+        Map<String, Object> boolClause =
+                (Map<String, Object>)
+                        boolObject;
+
+        StringBuilder whereString =
+                new StringBuilder();
+
+        if (boolClause.containsKey("must")) {
+
+            List<Map<String, Object>> mustClauses =
+                    (List<Map<String, Object>>)
+                            boolClause.get("must");
+
+            whereString.append(
+                    handleMustClause(
+                            mustClauses));
+        }
+
+        return whereString.toString();
+    }
+
+    /*
+     * ============================================================
+     * MUST
+     *
+     * Preserves match / range / between from your screenshots.
+     * ============================================================
+     */
+    private String handleMustClause(
+            List<Map<String, Object>> mustClauses) {
+
+        StringBuilder mustString =
+                new StringBuilder();
+
+        if (mustClauses == null) {
+            return "";
+        }
+
+        for (int i = 0;
+             i < mustClauses.size();
+             i++) {
+
+            Map<String, Object> condition =
+                    mustClauses.get(i);
+
+            /*
+             * ----------------------------------------------------
+             * MATCH
+             * ----------------------------------------------------
+             */
+            if (condition.containsKey("match")) {
+
+                Map<String, Object> matchClause =
+                        (Map<String, Object>)
+                                condition.get("match");
+
+                for (Map.Entry<String, Object> entry :
+                        matchClause.entrySet()) {
+
+                    String column =
+                            entry.getKey();
+
+                    Object value =
+                            entry.getValue();
+
+                    /*
+                     * Preserve your current JSON-path handling.
+                     */
+                    if (column.contains(".")) {
+
+                        String[] parts =
+                                column.split("\\.");
+
+                        String alias =
+                                parts[0];
+
+                        String jsPath =
+                                parts.length > 1
+                                        ? parts[1]
+                                        : "";
+
+                        if (jsPath.contains("->")) {
+
+                            String jsField =
+                                    alias
+                                            + "."
+                                            + jsPath;
+
+                            jsField =
+                                    jsField.replace(
+                                            "->>",
+                                            "->>'");
+
+                            mustString
+                                    .append(jsField)
+                                    .append(" = '")
+                                    .append(value)
+                                    .append("'");
+
+                        } else {
+
+                            mustString
+                                    .append(column)
+                                    .append(" = '")
+                                    .append(value)
+                                    .append("'");
+                        }
+
+                    } else {
+
+                        mustString
+                                .append(column)
+                                .append(" = '")
+                                .append(value)
+                                .append("'");
+                    }
+                }
+            }
+
+            /*
+             * ----------------------------------------------------
+             * RANGE
+             * ----------------------------------------------------
+             */
+            else if (condition.containsKey("range")) {
+
+                Map<String, Object> rangeClause =
+                        (Map<String, Object>)
+                                condition.get("range");
+
+                for (Map.Entry<String, Object> entry :
+                        rangeClause.entrySet()) {
+
+                    String column =
+                            entry.getKey();
+
+                    Map<String, Object> rangeValues =
+                            (Map<String, Object>)
+                                    entry.getValue();
+
+                    for (Map.Entry<String, Object> range :
+                            rangeValues.entrySet()) {
+
+                        String operator =
+                                convertRangeOperator(
+                                        range.getKey());
+
+                        Object value =
+                                range.getValue();
+
+                        mustString
+                                .append(column)
+                                .append(" ")
+                                .append(operator)
+                                .append(" '")
+                                .append(value)
+                                .append("'");
+                    }
+                }
+            }
+
+            /*
+             * ----------------------------------------------------
+             * BETWEEN
+             * ----------------------------------------------------
+             */
+            else if (condition.containsKey("between")) {
+
+                Map<String, Object> between =
+                        (Map<String, Object>)
+                                condition.get("between");
+
+                String field =
+                        convertJsonPathToSql(
+                                (String)
+                                        between.get("field"));
+
+                String from =
+                        between.get("from")
+                                .toString();
+
+                String to =
+                        between.get("to")
+                                .toString();
+
+                mustString
+                        .append(field)
+                        .append(" BETWEEN '")
+                        .append(from)
+                        .append("' AND '")
+                        .append(to)
+                        .append("'");
+            }
+
+            if (i < mustClauses.size() - 1) {
+
+                mustString.append(
+                        " AND ");
+            }
+        }
+
+        return mustString.toString();
+    }
+
+    /*
+     * ============================================================
+     * RANGE
+     *
+     * Matches screenshot.
+     * ============================================================
+     */
+    private String convertRangeOperator(
+            String esOperator) {
+
+        switch (esOperator) {
+
+            case "gte":
+                return ">=";
+
+            case "lte":
+                return "<=";
+
+            case "gt":
+                return ">";
+
+            case "lt":
+                return "<";
+
+            case "like":
+                return " LIKE ";
+
+            default:
+                throw new IllegalArgumentException(
+                        "Invalid range operator: "
+                                + esOperator);
+        }
+    }
+
+    /*
+     * ============================================================
+     * LIMIT
+     * ============================================================
+     */
+    private int parseLimit(
+            Object limitObj) {
+
+        if (limitObj instanceof Integer) {
+
+            return (Integer) limitObj;
+
+        } else if (limitObj instanceof String) {
+
+            return Integer.parseInt(
+                    (String) limitObj);
+
+        } else {
+
+            throw new IllegalArgumentException(
+                    "Invalid type for limit: "
+                            + limitObj);
+        }
+    }
+
+    /*
+     * ============================================================
+     * OFFSET
+     * ============================================================
+     */
+    private int parseOffset(
+            Object offsetObj) {
+
+        if (offsetObj instanceof Integer) {
+
+            return (Integer) offsetObj;
+
+        } else if (offsetObj instanceof String) {
+
+            return Integer.parseInt(
+                    (String) offsetObj);
+
+        } else {
+
+            throw new IllegalArgumentException(
+                    "Invalid type for offset: "
+                            + offsetObj);
+        }
+    }
+
+    /*
+     * ============================================================
+     * JSON PATH
+     *
+     * Kept based on your screenshot.
+     * ============================================================
+     */
+    private String convertJsonPathToSql(
+            String field) {
+
+        if (field == null) {
+            return null;
+        }
+
+        if (field.contains(".")) {
+
+            String[] parts =
+                    field.split("\\.");
+
+            /*
+             * Normal:
+             *
+             * acc.account_mrd_id
+             *
+             * Leave untouched.
+             */
+            if (parts.length == 2) {
+                return field;
+            }
+
+            StringBuilder sql =
+                    new StringBuilder();
+
+            sql.append(parts[0])
+                    .append(".")
+                    .append(parts[1]);
+
+            for (int i = 2;
+                 i < parts.length;
+                 i++) {
+
+                sql.append("->>'")
+                        .append(parts[i])
+                        .append("'");
+            }
+
+            return sql.toString();
+        }
+
+        return field;
+    }
+
+    /*
+     * ============================================================
+     * JOIN TYPE
+     * ============================================================
+     */
+    private String normalizeJoinType(
+            String type) {
+
+        if (type == null
+                || type.isBlank()) {
+
+            return "INNER";
+        }
+
+        String normalized =
+                type.trim()
+                        .toUpperCase(
+                                Locale.ROOT);
+
+        switch (normalized) {
+
+            case "JOIN":
+            case "INNER":
+            case "INNER JOIN":
+                return "INNER";
+
+            case "LEFT":
+            case "LEFT JOIN":
+            case "LEFT OUTER":
+            case "LEFT OUTER JOIN":
+                return "LEFT";
+
+            case "RIGHT":
+            case "RIGHT JOIN":
+                return "RIGHT";
+
+            case "FULL":
+            case "FULL JOIN":
+            case "FULL OUTER JOIN":
+                return "FULL";
+
+            default:
+                throw new IllegalArgumentException(
+                        "Invalid join type: "
+                                + type);
+        }
+    }
+
+    /*
+     * ============================================================
+     * NORMALIZE
+     *
+     * Preserve your existing payload wrapper compatibility.
+     * ============================================================
+     */
+    private Map<String, Object> normalizeQueryRequest(
+            Map<String, Object> queryRequest) {
+
+        if (queryRequest == null) {
+            return Collections.emptyMap();
+        }
+
+        Object payload =
+                queryRequest.get("payload");
+
+        if (payload instanceof Map) {
+
+            return (Map<String, Object>)
+                    payload;
+        }
+
+        return queryRequest;
+    }
+
+    /*
+     * ============================================================
+     * IDENTIFIER SAFETY
+     * ============================================================
+     */
+    private void validateIdentifier(
+            String value) {
+
+        if (value == null
+                || !value.matches(
+                "[A-Za-z_][A-Za-z0-9_]*")) {
+
+            throw new IllegalArgumentException(
+                    "Invalid identifier: "
+                            + value);
+        }
+    }
+
+    private String getRequiredString(
+            Map<String, Object> map,
+            String key) {
+
+        Object value =
+                map.get(key);
+
+        if (!(value instanceof String)
+                || ((String) value).isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Missing " + key);
+        }
+
+        return (String) value;
+    }
+}
