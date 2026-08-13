@@ -1,0 +1,919 @@
+grammar PgRest;
+
+/*
+ * ============================================================
+ * ROOT
+ * ============================================================
+ *
+ * Existing:
+ *   SELECT ... FROM ... WHERE ...
+ *
+ * New:
+ *   WITH base AS (...) SELECT ... FROM base ...
+ */
+query
+    : withClause?
+      selectClause
+      fromClause
+      joinClause*
+      whereClause?
+      groupByClause?
+      havingClause?
+      orderClause?
+      limitClause?
+      offsetClause?
+      EOF
+    ;
+
+
+/*
+ * ============================================================
+ * WITH / CTE - NEW
+ * ============================================================
+ */
+
+withClause
+    : WITH cteDefinition
+      (COMMA cteDefinition)*
+    ;
+
+cteDefinition
+    : ID AS LPAREN cteQuery RPAREN
+    ;
+
+/*
+ * Do not use `query` here because query consumes EOF.
+ *
+ * This also deliberately does not contain another WITH,
+ * keeping CTE parsing simple and non-recursive.
+ */
+cteQuery
+    : selectClause
+      fromClause
+      joinClause*
+      whereClause?
+      groupByClause?
+      havingClause?
+      orderClause?
+      limitClause?
+      offsetClause?
+    ;
+
+
+/*
+ * ============================================================
+ * SELECT
+ * ============================================================
+ */
+
+selectClause
+    : SELECT selectItem
+      (COMMA selectItem)*
+    ;
+
+/*
+ * Existing normal column remains supported.
+ *
+ * New:
+ *   MAX(...)
+ *   'GCS' AS sourceSystemName
+ *   acc.account_tp::text AS account_type
+ */
+selectItem
+    : columnExpression aliasClause?
+    | aggregateExpression aliasClause?
+    | literal aliasClause
+    | STAR
+    ;
+
+
+/*
+ * ============================================================
+ * COLUMN
+ * ============================================================
+ *
+ * Existing:
+ *
+ *   account_mrd_id
+ *   acc.account_mrd_id
+ *
+ * Supports schema/table/column as well.
+ */
+
+column
+    : qualifiedIdentifier
+    ;
+
+/*
+ * Additive PostgreSQL cast support:
+ *
+ * acc.account_tp::text
+ */
+columnExpression
+    : column castClause?
+    ;
+
+castClause
+    : DOUBLE_COLON ID
+    ;
+
+
+/*
+ * ============================================================
+ * QUALIFIED IDENTIFIER
+ * ============================================================
+ */
+
+qualifiedIdentifier
+    : ID
+      (DOT ID)*
+    ;
+
+
+/*
+ * ============================================================
+ * ALIAS
+ * ============================================================
+ *
+ * Supports:
+ *
+ * AS account_type
+ *
+ * AS "Cash Account Number"
+ */
+
+aliasClause
+    : AS alias
+    ;
+
+alias
+    : ID
+    | QUOTED_IDENTIFIER
+    ;
+
+
+/*
+ * ============================================================
+ * AGGREGATE - NEW
+ * ============================================================
+ *
+ * MAX(b.instruct_value)
+ *
+ * COUNT(*)
+ *
+ * BOOL_OR(b.role_value IS NOT NULL)
+ */
+
+aggregateExpression
+    : aggregateFunction
+      LPAREN
+      aggregateArgument
+      RPAREN
+      filterClause?
+    ;
+
+aggregateFunction
+    : MAX
+    | MIN
+    | SUM
+    | AVG
+    | COUNT
+    | BOOL_OR
+    | BOOL_AND
+    ;
+
+aggregateArgument
+    : STAR
+    | columnExpression
+    | condition
+    ;
+
+
+/*
+ * ============================================================
+ * POSTGRES FILTER - NEW
+ * ============================================================
+ *
+ * MAX(b.instruct_value)
+ * FILTER (
+ *     WHERE b.instruct_tp = 'GCS Legal Entity Id'
+ * )
+ */
+
+filterClause
+    : FILTER
+      LPAREN
+      WHERE
+      conditionGroup
+      RPAREN
+    ;
+
+
+/*
+ * ============================================================
+ * FROM
+ * ============================================================
+ *
+ * Works for:
+ *
+ * FROM pmrd.t_account acc
+ *
+ * and:
+ *
+ * FROM base b
+ *
+ * ANTLR does not need to know whether base is a CTE.
+ */
+
+fromClause
+    : FROM tableReference
+    ;
+
+tableReference
+    : qualifiedIdentifier
+      tableAlias?
+    ;
+
+tableAlias
+    : AS? ID
+    ;
+
+
+/*
+ * ============================================================
+ * JOIN
+ * ============================================================
+ *
+ * Existing JOIN remains.
+ *
+ * Added:
+ * LEFT JOIN
+ * LEFT OUTER JOIN
+ * CROSS JOIN
+ */
+
+joinClause
+    : joinType
+      tableReference
+      ON
+      conditionGroup
+
+    | CROSS
+      JOIN
+      tableReference
+    ;
+
+joinType
+    : JOIN
+    | INNER JOIN
+    | LEFT JOIN
+    | LEFT OUTER JOIN
+    ;
+
+
+/*
+ * ============================================================
+ * WHERE
+ * ============================================================
+ */
+
+whereClause
+    : WHERE conditionGroup
+    ;
+
+
+/*
+ * ============================================================
+ * BOOLEAN CONDITION GROUP
+ * ============================================================
+ *
+ * Supports:
+ *
+ * A = 1
+ *
+ * A = 1 AND B = 2
+ *
+ * A = 1 OR B = 2
+ *
+ * (A = 1 AND B = 2)
+ * OR
+ * (C = 3 AND D = 4)
+ */
+
+conditionGroup
+    : conditionExpression
+      (
+          logicalOperator
+          conditionExpression
+      )*
+    ;
+
+conditionExpression
+    : condition
+    | LPAREN conditionGroup RPAREN
+    ;
+
+logicalOperator
+    : AND
+    | OR
+    ;
+
+
+/*
+ * ============================================================
+ * CONDITION
+ * ============================================================
+ *
+ * IMPORTANT:
+ *
+ * IS NULL is separate from comparisonCondition.
+ *
+ * Therefore:
+ *
+ * acc.account_closing_date IS NULL
+ *
+ * does NOT expect a rightSide.
+ */
+
+condition
+    : comparisonCondition
+    | inCondition
+    | betweenCondition
+    | likeCondition
+    | isCondition
+    | aggregateCondition
+    ;
+
+
+/*
+ * ============================================================
+ * STANDARD COMPARISON
+ * ============================================================
+ *
+ * acc.source_id = 2
+ *
+ * a.account_id = b.account_id
+ */
+
+comparisonCondition
+    : columnExpression
+      comparisonOperator
+      rightSide
+    ;
+
+rightSide
+    : columnExpression
+    | value
+    ;
+
+comparisonOperator
+    : EQ
+    | NE
+    | GT
+    | GTE
+    | LT
+    | LTE
+    ;
+
+
+/*
+ * ============================================================
+ * IN / NOT IN
+ * ============================================================
+ *
+ * r.role_tp IN ('Client', 'Client-SF')
+ */
+
+inCondition
+    : columnExpression
+      NOT?
+      IN
+      LPAREN
+      valueList
+      RPAREN
+    ;
+
+valueList
+    : value
+      (COMMA value)*
+    ;
+
+
+/*
+ * ============================================================
+ * BETWEEN / NOT BETWEEN
+ * ============================================================
+ */
+
+betweenCondition
+    : columnExpression
+      NOT?
+      BETWEEN
+      value
+      AND
+      value
+    ;
+
+
+/*
+ * ============================================================
+ * LIKE / NOT LIKE
+ * ============================================================
+ *
+ * account_nm LIKE 'ABC%'
+ *
+ * account_nm NOT LIKE 'ARMIRA%'
+ */
+
+likeCondition
+    : columnExpression
+      NOT?
+      LIKE
+      value
+    ;
+
+
+/*
+ * ============================================================
+ * IS NULL / IS NOT NULL
+ *
+ * Also preserves EMPTY style if your translator generates it.
+ * ============================================================
+ */
+
+isCondition
+    : columnExpression
+      IS
+      isOperator
+    ;
+
+isOperator
+    : NULL
+    | NOT NULL
+    | EMPTY
+    | NOT EMPTY
+    ;
+
+
+/*
+ * ============================================================
+ * AGGREGATE CONDITION - NEW
+ * ============================================================
+ *
+ * Used primarily by HAVING:
+ *
+ * MAX(b.value) IS NOT NULL
+ *
+ * COUNT(*) > 1
+ */
+
+aggregateCondition
+    : aggregateExpression
+      comparisonOperator
+      value
+
+    | aggregateExpression
+      IS
+      isOperator
+    ;
+
+
+/*
+ * ============================================================
+ * GROUP BY - NEW
+ * ============================================================
+ */
+
+groupByClause
+    : GROUP
+      BY
+      columnExpression
+      (
+          COMMA
+          columnExpression
+      )*
+    ;
+
+
+/*
+ * ============================================================
+ * HAVING - NEW
+ * ============================================================
+ */
+
+havingClause
+    : HAVING
+      conditionGroup
+    ;
+
+
+/*
+ * ============================================================
+ * ORDER BY
+ * ============================================================
+ */
+
+orderClause
+    : ORDER
+      BY
+      orderItem
+      (
+          COMMA
+          orderItem
+      )*
+    ;
+
+orderItem
+    : columnExpression
+      (
+          ASC
+        | DESC
+      )?
+    ;
+
+
+/*
+ * ============================================================
+ * LIMIT
+ * ============================================================
+ */
+
+limitClause
+    : LIMIT NUMBER
+    ;
+
+
+/*
+ * ============================================================
+ * OFFSET
+ * ============================================================
+ */
+
+offsetClause
+    : OFFSET NUMBER
+    ;
+
+
+/*
+ * ============================================================
+ * VALUES
+ * ============================================================
+ */
+
+value
+    : STRING
+    | NUMBER
+    | BOOLEAN
+    | NULL
+    ;
+
+literal
+    : STRING
+    | NUMBER
+    | BOOLEAN
+    | NULL
+    ;
+
+
+/*
+ * ============================================================
+ * KEYWORDS
+ * ============================================================
+ */
+
+WITH
+    : W I T H
+    ;
+
+AS
+    : A S
+    ;
+
+SELECT
+    : S E L E C T
+    ;
+
+FROM
+    : F R O M
+    ;
+
+WHERE
+    : W H E R E
+    ;
+
+JOIN
+    : J O I N
+    ;
+
+INNER
+    : I N N E R
+    ;
+
+LEFT
+    : L E F T
+    ;
+
+OUTER
+    : O U T E R
+    ;
+
+CROSS
+    : C R O S S
+    ;
+
+ON
+    : O N
+    ;
+
+AND
+    : A N D
+    ;
+
+OR
+    : O R
+    ;
+
+IN
+    : I N
+    ;
+
+NOT
+    : N O T
+    ;
+
+LIKE
+    : L I K E
+    ;
+
+BETWEEN
+    : B E T W E E N
+    ;
+
+IS
+    : I S
+    ;
+
+NULL
+    : N U L L
+    ;
+
+EMPTY
+    : E M P T Y
+    ;
+
+GROUP
+    : G R O U P
+    ;
+
+BY
+    : B Y
+    ;
+
+HAVING
+    : H A V I N G
+    ;
+
+ORDER
+    : O R D E R
+    ;
+
+ASC
+    : A S C
+    ;
+
+DESC
+    : D E S C
+    ;
+
+LIMIT
+    : L I M I T
+    ;
+
+OFFSET
+    : O F F S E T
+    ;
+
+FILTER
+    : F I L T E R
+    ;
+
+MAX
+    : M A X
+    ;
+
+MIN
+    : M I N
+    ;
+
+SUM
+    : S U M
+    ;
+
+AVG
+    : A V G
+    ;
+
+COUNT
+    : C O U N T
+    ;
+
+BOOL_OR
+    : B O O L '_' O R
+    ;
+
+BOOL_AND
+    : B O O L '_' A N D
+    ;
+
+BOOLEAN
+    : TRUE
+    | FALSE
+    ;
+
+TRUE
+    : T R U E
+    ;
+
+FALSE
+    : F A L S E
+    ;
+
+
+/*
+ * ============================================================
+ * OPERATORS
+ *
+ * Put multi-character operators before single-character ones.
+ * ============================================================
+ */
+
+GTE
+    : '>='
+    ;
+
+LTE
+    : '<='
+    ;
+
+NE
+    : '<>'
+    | '!='
+    ;
+
+EQ
+    : '='
+    ;
+
+GT
+    : '>'
+    ;
+
+LT
+    : '<'
+    ;
+
+DOUBLE_COLON
+    : '::'
+    ;
+
+
+/*
+ * ============================================================
+ * SYMBOLS
+ * ============================================================
+ */
+
+LPAREN
+    : '('
+    ;
+
+RPAREN
+    : ')'
+    ;
+
+COMMA
+    : ','
+    ;
+
+DOT
+    : '.'
+    ;
+
+STAR
+    : '*'
+    ;
+
+
+/*
+ * ============================================================
+ * STRING
+ *
+ * Supports escaped SQL quote:
+ *
+ * 'John''s Account'
+ * ============================================================
+ */
+
+STRING
+    : '\''
+      (
+          '\'\''
+        | ~'\''
+      )*
+      '\''
+    ;
+
+
+/*
+ * ============================================================
+ * NUMBER
+ * ============================================================
+ */
+
+NUMBER
+    : '-'?
+      [0-9]+
+      (
+          '.'
+          [0-9]+
+      )?
+    ;
+
+
+/*
+ * ============================================================
+ * QUOTED IDENTIFIER
+ *
+ * Required for:
+ *
+ * "Cash Account Number"
+ * "GCS LE ID"
+ * ============================================================
+ */
+
+QUOTED_IDENTIFIER
+    : '"'
+      (
+          '""'
+        | ~'"'
+      )*
+      '"'
+    ;
+
+
+/*
+ * ============================================================
+ * IDENTIFIER
+ * ============================================================
+ */
+
+ID
+    : [a-zA-Z_]
+      [a-zA-Z0-9_$]*
+    ;
+
+
+/*
+ * ============================================================
+ * WHITESPACE
+ * ============================================================
+ */
+
+WS
+    : [ \t\r\n]+
+      -> skip
+    ;
+
+
+/*
+ * ============================================================
+ * CASE INSENSITIVE KEYWORD FRAGMENTS
+ * ============================================================
+ */
+
+fragment A : [aA];
+fragment B : [bB];
+fragment C : [cC];
+fragment D : [dD];
+fragment E : [eE];
+fragment F : [fF];
+fragment G : [gG];
+fragment H : [hH];
+fragment I : [iI];
+fragment J : [jJ];
+fragment K : [kK];
+fragment L : [lL];
+fragment M : [mM];
+fragment N : [nN];
+fragment O : [oO];
+fragment P : [pP];
+fragment Q : [qQ];
+fragment R : [rR];
+fragment S : [sS];
+fragment T : [tT];
+fragment U : [uU];
+fragment V : [vV];
+fragment W : [wW];
+fragment X : [xX];
+fragment Y : [yY];
+fragment Z : [zZ];
