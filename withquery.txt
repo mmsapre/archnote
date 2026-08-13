@@ -5,26 +5,41 @@
         "name": "base",
         "query": {
           "source": [
-            { "field": "acc.source_id" },
+            {
+              "field": "acc.source_id"
+            },
             {
               "field": "acc.account_tp::text",
               "alias": "account_type"
             },
-            { "field": "acc.account_mrd_id" },
-            { "field": "acc.region_nm" },
-
+            {
+              "field": "acc.account_mrd_id"
+            },
+            {
+              "field": "acc.region_nm"
+            },
             {
               "field": "aia.alternate_tp_value",
               "alias": "securities_account_number"
             },
-
-            { "field": "sra.usage_tp" },
-            { "field": "sra.dep_reg_def_cd" },
-            { "field": "sra.dep_reg_cgo_cd" },
-            { "field": "acc.added_dt_ts" },
-
-            { "field": "r.role_tp" },
-            { "field": "r.role_value" },
+            {
+              "field": "sra.usage_tp"
+            },
+            {
+              "field": "sra.dep_reg_def_cd"
+            },
+            {
+              "field": "sra.dep_reg_cgo_cd"
+            },
+            {
+              "field": "acc.added_dt_ts"
+            },
+            {
+              "field": "r.role_tp"
+            },
+            {
+              "field": "r.role_value"
+            },
             {
               "field": "r.mrd_id",
               "alias": "role_mrd_id"
@@ -33,10 +48,12 @@
               "field": "p.name",
               "alias": "role_name"
             },
-
-            { "field": "i.instruct_tp" },
-            { "field": "i.instruct_value" },
-
+            {
+              "field": "i.instruct_tp"
+            },
+            {
+              "field": "i.instruct_value"
+            },
             {
               "field": "aid.alternate_id_tp",
               "alias": "aid_tp"
@@ -45,10 +62,12 @@
               "field": "aid.alternate_tp_value",
               "alias": "aid_value"
             },
-
-            { "field": "flag.flag_nm_value" },
-            { "field": "flag.flag_nm_tp" },
-
+            {
+              "field": "flag.flag_nm_value"
+            },
+            {
+              "field": "flag.flag_nm_tp"
+            },
             {
               "field": "link.cash_mrd_account_id",
               "alias": "Cash MRD Account Id"
@@ -89,21 +108,49 @@
               "field": "aiacashdepbic.alternate_tp_value",
               "alias": "Cash Depository Bic"
             },
-
-            { "field": "nfos.nfos_tp_value" },
-            { "field": "nfos.nfos_tp_nm" },
-            { "field": "acrnm.acronyms_tp_nm" },
-            { "field": "acrnm.acronyms_tp_value" },
-
-            { "field": "plcy.is_permitted" },
-
-            { "field": "ADDR.ADDR_TP" },
-            { "field": "ADDR.ADDR_LN_1" },
-            { "field": "ADDR.ADDR_LN_2" },
-            { "field": "ADDR.CNTRY" },
-            { "field": "ADDR.CITY" },
-            { "field": "ADDR.cntry_sub_div" },
-            { "field": "ADDR.post_cd" }
+            {
+              "field": "nfos.nfos_tp_value"
+            },
+            {
+              "field": "nfos.nfos_tp_nm"
+            },
+            {
+              "field": "acrnm.acronyms_tp_nm"
+            },
+            {
+              "field": "acrnm.acronyms_tp_value"
+            },
+            {
+              "field": "plcy.is_permitted"
+            },
+            {
+              "field": "ADDR.ADDR_TP",
+              "alias": "addr_tp"
+            },
+            {
+              "field": "ADDR.ADDR_LN_1",
+              "alias": "ADDR_LN_1"
+            },
+            {
+              "field": "ADDR.ADDR_LN_2",
+              "alias": "ADDR_LN_2"
+            },
+            {
+              "field": "ADDR.CNTRY",
+              "alias": "CNTRY"
+            },
+            {
+              "field": "ADDR.CITY",
+              "alias": "CITY"
+            },
+            {
+              "field": "ADDR.cntry_sub_div",
+              "alias": "cntry_sub_div"
+            },
+            {
+              "field": "ADDR.post_cd",
+              "alias": "post_cd"
+            }
           ],
 
           "from": {
@@ -113,91 +160,91 @@
 
           "joins": [
             {
-              "type": "JOIN",
+              "type": "inner",
               "table": "t_alternate_identifier_account",
               "alias": "aia",
               "on": "aia.load_rowid = acc.load_rowid AND aia.alternate_id_tp = 'SecuritiesAccountNumber' AND aia.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_linkage_account",
               "alias": "link",
               "on": "link.sec_mrd_account_id = aia.account_mrd_id AND link.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_alternate_identifier_account",
               "alias": "aiacashno",
               "on": "aiacashno.account_mrd_id = link.cash_mrd_account_id AND aiacashno.alternate_id_tp = 'Cash Account Number' AND aiacashno.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_alternate_identifier_details_account",
               "alias": "aiacashcd",
               "on": "aiacashcd.account_mrd_id = link.cash_mrd_account_id AND aiacashcd.alternate_id_tp = 'Cash Account Sort Code' AND aiacashcd.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_alternate_identifier_account",
               "alias": "aiacashiban",
               "on": "aiacashiban.account_mrd_id = link.cash_mrd_account_id AND aiacashiban.alternate_id_tp = 'Cash Account IBAN' AND aiacashiban.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_usage_type_account",
               "alias": "usagetp",
               "on": "usagetp.link_acc_id = link.link_acc_id"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_account_arrange_mapping",
               "alias": "accam",
               "on": "accam.account_mrd_id = acc.account_mrd_id AND accam.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_arrangement",
               "alias": "arrange",
               "on": "arrange.arrange_id = accam.arrange_id AND arrange.arrange_tp = 'GCS GRID mapping' AND arrange.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_arrangement_role",
               "alias": "ar",
               "on": "ar.arrange_id = arrange.arrange_id AND ar.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_role",
               "alias": "r",
               "on": "r.role_id = ar.role_id AND r.mrd_end_dt_ts = a.end_ts AND r.role_tp IN ('Client','Client-SF','Contracting Party','HSBC Contract Holding Entity','HSBC Client Servicing Entity')"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_party",
               "alias": "p",
               "on": "p.mrd_id = r.mrd_id AND p.source_id = 1 AND p.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_instruction",
               "alias": "i",
               "on": "i.arrange_role_id = ar.arrange_role_id AND i.mrd_end_dt_ts = a.end_ts AND i.instruct_tp IN ('GCS Legal Entity Id','GCS Legal Entity Sub Fund Indicator')"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_security_ref_account",
               "alias": "sra",
               "on": "sra.load_rowid = aia.load_rowid AND sra.account_mrd_id = aia.account_mrd_id AND sra.mrd_end_dt_ts = a.end_ts"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_alternate_identifier_details_account",
               "alias": "aid",
               "on": "aid.load_rowid = aia.load_rowid AND aid.account_mrd_id = aia.account_mrd_id AND aid.mrd_end_dt_ts = a.end_ts AND aid.alternate_id_tp IN ('adminOfficer','accountOperationalStatus','investmentManager','hbfAccountIndicator','shareholderType','fxEslClientIdentifier')"
             },
             {
-              "type": "LEFT",
+              "type": "left",
               "table": "t_flag_account",
               "alias": "flag",
               "on": "flag.load_rowid = aia.load_rowid AND flag.account_mrd_id = aia.account_mrd_id AND flag.flag_nm_tp IN ('sanctionsFlag','accountPrimeFlag') AND flag.mrd_end_dt_ts = a.end_ts"
@@ -251,62 +298,23 @@
       },
 
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.instruct_value",
-          "filter": {
-            "match": {
-              "b.instruct_tp": "GCS Legal Entity Id"
-            }
-          }
-        },
+        "field": "b.instruct_value",
+        "aggregate": "max",
         "alias": "GCS LE ID"
       },
-
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.instruct_value",
-          "filter": {
-            "match": {
-              "b.instruct_tp": "GCS Legal Entity Sub Fund Indicator"
-            }
-          }
-        },
+        "field": "b.instruct_value",
+        "aggregate": "max",
         "alias": "SF/LE Indicator"
       },
-
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.role_value",
-          "filter": {
-            "in": {
-              "field": "b.role_tp",
-              "values": [
-                "Client",
-                "Client-SF"
-              ]
-            }
-          }
-        },
+        "field": "b.role_value",
+        "aggregate": "max",
         "alias": "Client GRID"
       },
-
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.role_value",
-          "filter": {
-            "in": {
-              "field": "b.role_tp",
-              "values": [
-                "Client",
-                "Client-SF"
-              ]
-            }
-          }
-        },
+        "field": "b.role_name",
+        "aggregate": "max",
         "alias": "Client GRID Name"
       },
 
@@ -342,64 +350,29 @@
       },
 
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.ADDR_LN_1",
-          "filter": {
-            "match": {
-              "b.addr_tp": "REGISTERED.ADDRESS"
-            }
-          }
-        },
+        "field": "b.ADDR_LN_1",
+        "aggregate": "max",
         "alias": "Registered Address Line 1"
       },
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.ADDR_LN_2",
-          "filter": {
-            "match": {
-              "b.addr_tp": "REGISTERED.ADDRESS"
-            }
-          }
-        },
+        "field": "b.ADDR_LN_2",
+        "aggregate": "max",
         "alias": "Registered Address Line 2"
       },
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.CNTRY",
-          "filter": {
-            "match": {
-              "b.addr_tp": "REGISTERED.ADDRESS"
-            }
-          }
-        },
+        "field": "b.CNTRY",
+        "aggregate": "max",
         "alias": "Registered Address Country"
       },
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.CITY",
-          "filter": {
-            "match": {
-              "b.addr_tp": "REGISTERED.ADDRESS"
-            }
-          }
-        },
+        "field": "b.CITY",
+        "aggregate": "max",
         "alias": "Registered Address City"
       },
 
       {
-        "aggregate": {
-          "function": "MAX",
-          "field": "b.ADDR_LN_1",
-          "filter": {
-            "match": {
-              "b.addr_tp": "MAIN ADDRESS"
-            }
-          }
-        },
+        "field": "b.ADDR_LN_1",
+        "aggregate": "max",
         "alias": "Main Address Line 1"
       },
 
@@ -431,20 +404,6 @@
       "b.Cash Sender BIC",
       "b.Cash Depository Bic",
       "b.is_permitted"
-    ],
-
-    "having": {
-      "bool": {
-        "must": [
-          {
-            "aggregate": {
-              "function": "BOOL_OR",
-              "field": "b.role_value",
-              "operator": "IS NOT NULL"
-            }
-          }
-        ]
-      }
-    }
+    ]
   }
 }
