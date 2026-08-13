@@ -1,0 +1,529 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Dynamic Query DSL API",
+    "version": "1.0.0",
+    "description": "Dynamic SQL query API supporting Boolean filters, joins, CTEs, grouping and pagination."
+  },
+  "paths": {
+    "/v1/query": {
+      "post": {
+        "summary": "Execute dynamic DSL query",
+        "operationId": "executeQuery",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              },
+              "example": {
+                "_source": [
+                  "acc.account_mrd_id",
+                  "acc.account_nm"
+                ],
+                "from": {
+                  "table": "t_account",
+                  "alias": "acc"
+                },
+                "query": {
+                  "bool": {
+                    "must": [
+                      {
+                        "match": {
+                          "acc.account_tp": "Securities"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "pagination": {
+                  "limit": 100,
+                  "offset": 0
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Query executed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query request"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "QueryRequest": {
+        "type": "object",
+        "properties": {
+          "with": {
+            "type": "array",
+            "description": "Optional Common Table Expressions. Existing requests do not need this property.",
+            "items": {
+              "$ref": "#/components/schemas/CteDefinition"
+            }
+          },
+          "_source": {
+            "type": "array",
+            "description": "Legacy select-field representation retained for backward compatibility.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "acc.account_mrd_id",
+              "acc.account_nm"
+            ]
+          },
+          "source": {
+            "type": "array",
+            "description": "Structured select-field representation.",
+            "items": {
+              "$ref": "#/components/schemas/SelectField"
+            }
+          },
+          "from": {
+            "description": "Physical table or CTE used as the query source.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/FromClause"
+              }
+            ]
+          },
+          "joins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JoinClause"
+            }
+          },
+          "query": {
+            "$ref": "#/components/schemas/QueryClause"
+          },
+          "groupBy": {
+            "$ref": "#/components/schemas/GroupBy"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 0
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        }
+      },
+
+      "CteDefinition": {
+        "type": "object",
+        "required": [
+          "name",
+          "query"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the Common Table Expression.",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "example": "base"
+          },
+          "query": {
+            "$ref": "#/components/schemas/CteQuery"
+          }
+        }
+      },
+
+      "CteQuery": {
+        "type": "object",
+        "properties": {
+          "_source": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "acc.account_mrd_id",
+              "acc.account_nm"
+            ]
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SelectField"
+            }
+          },
+          "from": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/FromClause"
+              }
+            ]
+          },
+          "joins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JoinClause"
+            }
+          },
+          "query": {
+            "$ref": "#/components/schemas/QueryClause"
+          },
+          "groupBy": {
+            "$ref": "#/components/schemas/GroupBy"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        }
+      },
+
+      "SelectField": {
+        "type": "object",
+        "required": [
+          "field"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "Column or supported SQL select expression.",
+            "example": "acc.account_mrd_id"
+          },
+          "alias": {
+            "type": "string",
+            "example": "accountId"
+          }
+        }
+      },
+
+      "FromClause": {
+        "type": "object",
+        "required": [
+          "table"
+        ],
+        "properties": {
+          "table": {
+            "type": "string",
+            "description": "Physical table or a CTE name.",
+            "example": "t_account"
+          },
+          "alias": {
+            "type": "string",
+            "example": "acc"
+          }
+        }
+      },
+
+      "JoinClause": {
+        "type": "object",
+        "required": [
+          "table",
+          "on"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "SQL join type.",
+            "enum": [
+              "INNER",
+              "LEFT",
+              "RIGHT",
+              "FULL"
+            ],
+            "default": "INNER"
+          },
+          "table": {
+            "type": "string",
+            "description": "Physical table or CTE name.",
+            "example": "t_alternate_identifier_account"
+          },
+          "alias": {
+            "type": "string",
+            "example": "aia"
+          },
+          "on": {
+            "type": "string",
+            "description": "Join condition.",
+            "example": "aia.load_rowid = acc.load_rowid"
+          }
+        }
+      },
+
+      "GroupBy": {
+        "type": "array",
+        "description": "Columns or expressions used in GROUP BY.",
+        "items": {
+          "type": "string"
+        },
+        "example": [
+          "acc.account_tp",
+          "acc.region_nm"
+        ]
+      },
+
+      "QueryClause": {
+        "type": "object",
+        "properties": {
+          "bool": {
+            "$ref": "#/components/schemas/BoolQuery"
+          }
+        }
+      },
+
+      "BoolQuery": {
+        "type": "object",
+        "properties": {
+          "must": {
+            "type": "array",
+            "description": "Conditions combined using AND.",
+            "items": {
+              "$ref": "#/components/schemas/Condition"
+            }
+          },
+          "should": {
+            "type": "array",
+            "description": "Conditions combined using OR.",
+            "items": {
+              "$ref": "#/components/schemas/Condition"
+            }
+          },
+          "mustNot": {
+            "type": "array",
+            "description": "Negated conditions.",
+            "items": {
+              "$ref": "#/components/schemas/Condition"
+            }
+          },
+          "in": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InCondition"
+            }
+          },
+          "is": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IsCondition"
+            }
+          },
+          "like": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LikeCondition"
+            }
+          },
+          "notLike": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LikeCondition"
+            }
+          }
+        }
+      },
+
+      "Condition": {
+        "type": "object",
+        "properties": {
+          "match": {
+            "$ref": "#/components/schemas/MatchCondition"
+          },
+          "range": {
+            "$ref": "#/components/schemas/RangeCondition"
+          },
+          "between": {
+            "$ref": "#/components/schemas/BetweenCondition"
+          },
+          "in": {
+            "$ref": "#/components/schemas/InCondition"
+          },
+          "is": {
+            "$ref": "#/components/schemas/IsCondition"
+          },
+          "like": {
+            "$ref": "#/components/schemas/LikeMap"
+          }
+        }
+      },
+
+      "MatchCondition": {
+        "type": "object",
+        "description": "Equality match. Property name is the field and value is the expected value.",
+        "additionalProperties": true,
+        "example": {
+          "acc.account_tp": "Securities"
+        }
+      },
+
+      "RangeCondition": {
+        "type": "object",
+        "description": "Range comparison keyed by field.",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/RangeOperators"
+        },
+        "example": {
+          "acc.balance": {
+            "gte": 1000,
+            "lt": 100000
+          }
+        }
+      },
+
+      "RangeOperators": {
+        "type": "object",
+        "properties": {
+          "gt": {
+            "nullable": true
+          },
+          "gte": {
+            "nullable": true
+          },
+          "lt": {
+            "nullable": true
+          },
+          "lte": {
+            "nullable": true
+          }
+        }
+      },
+
+      "BetweenCondition": {
+        "type": "object",
+        "required": [
+          "field",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "example": "fa.sanctions_approved_date_time"
+          },
+          "from": {
+            "type": "string",
+            "example": "2018-02-01 00:00:00"
+          },
+          "to": {
+            "type": "string",
+            "description": "Upper bound. The application may populate this dynamically when required.",
+            "example": "2026-08-13 23:59:59"
+          }
+        }
+      },
+
+      "InCondition": {
+        "type": "object",
+        "required": [
+          "field",
+          "values"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "example": "acc.account_tp"
+          },
+          "values": {
+            "type": "array",
+            "items": {},
+            "example": [
+              "Securities",
+              "Cash"
+            ]
+          }
+        }
+      },
+
+      "IsCondition": {
+        "type": "object",
+        "required": [
+          "field",
+          "operator"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "example": "acc.account_closing_date"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "EMPTY",
+              "NOT_EMPTY",
+              "NULL",
+              "NOT_NULL",
+              "IS_NULL",
+              "IS_NOT_NULL"
+            ],
+            "example": "EMPTY"
+          }
+        }
+      },
+
+      "LikeMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "example": {
+          "acc.account_nm": "ARMIRA%"
+        }
+      },
+
+      "LikeCondition": {
+        "type": "object",
+        "required": [
+          "like"
+        ],
+        "properties": {
+          "like": {
+            "$ref": "#/components/schemas/LikeMap"
+          }
+        }
+      },
+
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 0
+          }
+        }
+      }
+    }
+  }
+}
