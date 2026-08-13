@@ -1,0 +1,1540 @@
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Component
+@SuppressWarnings("unchecked")
+public class JsonToDslTranslator {
+
+    private final QueryValidator queryValidator;
+    private final TableConfig tableConfig;
+
+    public JsonToDslTranslator(
+            QueryValidator queryValidator,
+            TableConfig tableConfig) {
+
+        this.queryValidator = queryValidator;
+        this.tableConfig = tableConfig;
+    }
+
+    // =========================================================
+    // ENTRY POINT
+    // =========================================================
+
+    public String translate(Map<String, Object> queryRequest) {
+
+        Map<String, Object> normalizedRequest =
+                normalizeQueryRequest(queryRequest);
+
+        // Existing request - no CTE.
+        if (!normalizedRequest.containsKey("with")
+                || normalizedRequest.get("with") == null) {
+
+            return translateQuery(
+                    normalizedRequest,
+                    Collections.emptyList());
+        }
+
+        Object withObject =
+                normalizedRequest.get("with");
+
+        if (!(withObject instanceof List)) {
+            throw new IllegalArgumentException(
+                    "'with' must be a list");
+        }
+
+        List<Map<String, Object>> ctes =
+                (List<Map<String, Object>>) withObject;
+
+        if (ctes.isEmpty()) {
+
+            Map<String, Object> copy =
+                    new LinkedHashMap<>(normalizedRequest);
+
+            copy.remove("with");
+
+            return translateQuery(
+                    copy,
+                    Collections.emptyList());
+        }
+
+        return translateWithClause(
+                normalizedRequest,
+                ctes);
+    }
+
+    // =========================================================
+    // QUERY
+    // =========================================================
+
+    public String translateQuery(
+            Map<String, Object> queryRequest,
+            List<Map<String, Object>> ctes) {
+
+        Map<String, Object> normalizedRequest =
+                normalizeQueryRequest(queryRequest);
+
+        /*
+         * Keep your existing validation.
+         *
+         * IMPORTANT:
+         * QueryValidator will eventually need to know CTE names
+         * so that FROM base is not treated as an invalid table.
+         */
+        if (!queryValidator.validateQuery(queryRequest)) {
+            throw new IllegalArgumentException(
+                    "Invalid table, alias, or columns in the request.");
+        }
+
+        List<String> selectColumns =
+                extractSelectColumns(normalizedRequest);
+
+        if (selectColumns.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "No select columns provided.");
+        }
+
+        String select =
+                String.join(", ", selectColumns);
+
+        Set<String> cteNames =
+                extractCteNames(ctes);
+
+        String from =
+                handleFromClause(
+                        normalizedRequest,
+                        cteNames);
+
+        StringBuilder queryString =
+                new StringBuilder();
+
+        queryString
+                .append("SELECT ")
+                .append(select)
+                .append(" FROM ")
+                .append(from);
+
+        // -----------------------------------------------------
+        // WHERE - existing
+        // -----------------------------------------------------
+
+        if (normalizedRequest.containsKey("query")) {
+
+            Map<String, Object> queryClause =
+                    (Map<String, Object>)
+                            normalizedRequest.get("query");
+
+            String where =
+                    handleQueryClause(queryClause);
+
+            if (where != null && !where.isBlank()) {
+                queryString
+                        .append(" WHERE ")
+                        .append(where);
+            }
+        }
+
+        // -----------------------------------------------------
+        // GROUP BY - new
+        // -----------------------------------------------------
+
+        appendGroupBy(
+                queryString,
+                normalizedRequest);
+
+        // -----------------------------------------------------
+        // HAVING - new
+        // -----------------------------------------------------
+
+        appendHaving(
+                queryString,
+                normalizedRequest);
+
+        // -----------------------------------------------------
+        // ORDER BY - optional extension
+        // -----------------------------------------------------
+
+        appendOrderBy(
+                queryString,
+                normalizedRequest);
+
+        // -----------------------------------------------------
+        // Existing LIMIT
+        // -----------------------------------------------------
+
+        if (normalizedRequest.containsKey("size")) {
+
+            int limit =
+                    parseLimit(
+                            normalizedRequest.get("size"));
+
+            queryString
+                    .append(" LIMIT ")
+                    .append(limit);
+
+        } else if (normalizedRequest.get("pagination")
+                instanceof Map) {
+
+            Map<String, Object> pagination =
+                    (Map<String, Object>)
+                            normalizedRequest.get("pagination");
+
+            if (pagination.containsKey("limit")) {
+
+                int limit =
+                        parseLimit(
+                                pagination.get("limit"));
+
+                queryString
+                        .append(" LIMIT ")
+                        .append(limit);
+            }
+        }
+
+        // -----------------------------------------------------
+        // Existing OFFSET
+        // -----------------------------------------------------
+
+        if (normalizedRequest.containsKey("offset")) {
+
+            int offset =
+                    parseOffset(
+                            normalizedRequest.get("offset"));
+
+            queryString
+                    .append(" OFFSET ")
+                    .append(offset);
+
+        } else if (normalizedRequest.get("pagination")
+                instanceof Map) {
+
+            Map<String, Object> pagination =
+                    (Map<String, Object>)
+                            normalizedRequest.get("pagination");
+
+            if (pagination.containsKey("offset")) {
+
+                int offset =
+                        parseOffset(
+                                pagination.get("offset"));
+
+                queryString
+                        .append(" OFFSET ")
+                        .append(offset);
+            }
+        }
+
+        System.out.println(
+                "Query =========================");
+
+        System.out.println(
+                queryString);
+
+        System.out.println(
+                "End Query =====================");
+
+        return queryString.toString();
+    }
+
+    // =========================================================
+    // WITH / CTE
+    // =========================================================
+
+    private String translateWithClause(
+            Map<String, Object> normalizedRequest,
+            List<Map<String, Object>> ctes) {
+
+        if (ctes == null || ctes.isEmpty()) {
+
+            Map<String, Object> query =
+                    new LinkedHashMap<>(normalizedRequest);
+
+            query.remove("with");
+
+            return translateQuery(
+                    query,
+                    Collections.emptyList());
+        }
+
+        // Validate names and duplicates.
+        extractCteNames(ctes);
+
+        StringBuilder sql =
+                new StringBuilder("WITH ");
+
+        for (int i = 0; i < ctes.size(); i++) {
+
+            Map<String, Object> cte =
+                    ctes.get(i);
+
+            if (cte == null) {
+                throw new IllegalArgumentException(
+                        "CTE definition cannot be null");
+            }
+
+            Object nameObject =
+                    cte.get("name");
+
+            if (!(nameObject instanceof String)
+                    || ((String) nameObject).isBlank()) {
+
+                throw new IllegalArgumentException(
+                        "CTE name is required");
+            }
+
+            String cteName =
+                    ((String) nameObject).trim();
+
+            validateIdentifier(cteName);
+
+            Object queryObject =
+                    cte.get("query");
+
+            if (!(queryObject instanceof Map)) {
+                throw new IllegalArgumentException(
+                        "CTE query is required for: "
+                                + cteName);
+            }
+
+            Map<String, Object> cteQuery =
+                    (Map<String, Object>) queryObject;
+
+            /*
+             * Pass CTE definitions so CTE references can be
+             * distinguished from physical tables.
+             */
+            String cteSql =
+                    translateQuery(
+                            cteQuery,
+                            ctes);
+
+            if (i > 0) {
+                sql.append(", ");
+            }
+
+            sql
+                    .append(cteName)
+                    .append(" AS (")
+                    .append(cteSql)
+                    .append(")");
+        }
+
+        Map<String, Object> mainQuery =
+                new LinkedHashMap<>(normalizedRequest);
+
+        mainQuery.remove("with");
+
+        String mainSql =
+                translateQuery(
+                        mainQuery,
+                        ctes);
+
+        sql
+                .append(" ")
+                .append(mainSql);
+
+        return sql.toString();
+    }
+
+    // =========================================================
+    // CTE NAMES
+    // =========================================================
+
+    private Set<String> extractCteNames(
+            List<Map<String, Object>> ctes) {
+
+        Set<String> names =
+                new HashSet<>();
+
+        if (ctes == null) {
+            return names;
+        }
+
+        for (Map<String, Object> cte : ctes) {
+
+            if (cte == null) {
+                continue;
+            }
+
+            String name =
+                    getRequiredString(
+                            cte,
+                            "name");
+
+            validateIdentifier(name);
+
+            String normalized =
+                    name.toLowerCase(Locale.ROOT);
+
+            if (!names.add(normalized)) {
+                throw new IllegalArgumentException(
+                        "Duplicate CTE: " + name);
+            }
+        }
+
+        return names;
+    }
+
+    private String getRequiredString(
+            Map<String, Object> map,
+            String key) {
+
+        Object value =
+                map.get(key);
+
+        if (!(value instanceof String)
+                || ((String) value).isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Missing " + key);
+        }
+
+        return ((String) value).trim();
+    }
+
+    private void validateIdentifier(
+            String value) {
+
+        if (value == null
+                || !value.matches(
+                "[A-Za-z_][A-Za-z0-9_]*")) {
+
+            throw new IllegalArgumentException(
+                    "Invalid identifier: "
+                            + value);
+        }
+    }
+
+    // =========================================================
+    // NORMALIZE
+    //
+    // Existing screenshot behavior.
+    // =========================================================
+
+    private Map<String, Object> normalizeQueryRequest(
+            Map<String, Object> queryRequest) {
+
+        if (queryRequest == null) {
+            return Collections.emptyMap();
+        }
+
+        Object payload =
+                queryRequest.get("payload");
+
+        if (payload instanceof Map) {
+            return (Map<String, Object>) payload;
+        }
+
+        return queryRequest;
+    }
+
+    // =========================================================
+    // SELECT
+    //
+    // Backward compatible:
+    //
+    // "_source": ["a.id", "a.name"]
+    //
+    // New:
+    //
+    // "source": [
+    //   {"field":"a.id"},
+    //   {"aggregate": {...}, "alias":"x"}
+    // ]
+    // =========================================================
+
+    private List<String> extractSelectColumns(
+            Map<String, Object> queryRequest) {
+
+        // -----------------------------------------------------
+        // OLD _source
+        // -----------------------------------------------------
+
+        Object legacySource =
+                queryRequest.get("_source");
+
+        if (legacySource instanceof List) {
+
+            List<String> columns =
+                    new ArrayList<>();
+
+            for (Object item :
+                    (List<?>) legacySource) {
+
+                if (item instanceof String
+                        && !((String) item).isBlank()) {
+
+                    columns.add((String) item);
+                }
+            }
+
+            return columns;
+        }
+
+        // -----------------------------------------------------
+        // source
+        // -----------------------------------------------------
+
+        Object source =
+                queryRequest.get("source");
+
+        if (!(source instanceof List)) {
+            return new ArrayList<>();
+        }
+
+        List<String> columns =
+                new ArrayList<>();
+
+        for (Object item :
+                (List<?>) source) {
+
+            // Also tolerate:
+            //
+            // "source":["a.id","a.name"]
+
+            if (item instanceof String) {
+
+                String value =
+                        ((String) item).trim();
+
+                if (!value.isBlank()) {
+                    columns.add(value);
+                }
+
+                continue;
+            }
+
+            if (!(item instanceof Map)) {
+                continue;
+            }
+
+            Map<String, Object> selectItem =
+                    (Map<String, Object>) item;
+
+            // Existing:
+            //
+            // {"field":"a.id"}
+
+            Object field =
+                    selectItem.get("field");
+
+            if (field instanceof String
+                    && !((String) field).isBlank()) {
+
+                String expression =
+                        ((String) field).trim();
+
+                Object alias =
+                        selectItem.get("alias");
+
+                if (alias instanceof String
+                        && !((String) alias).isBlank()) {
+
+                    expression +=
+                            " AS "
+                                    + formatAlias(
+                                    (String) alias);
+                }
+
+                columns.add(expression);
+
+                continue;
+            }
+
+            // New aggregate
+
+            if (selectItem.containsKey("aggregate")) {
+
+                columns.add(
+                        buildAggregate(
+                                selectItem));
+
+                continue;
+            }
+
+            // Optional literal:
+            //
+            // {
+            //   "value":"GCS",
+            //   "alias":"sourceSystemName"
+            // }
+
+            if (selectItem.containsKey("value")) {
+
+                Object alias =
+                        selectItem.get("alias");
+
+                if (!(alias instanceof String)
+                        || ((String) alias).isBlank()) {
+
+                    throw new IllegalArgumentException(
+                            "Alias required for literal select value");
+                }
+
+                columns.add(
+                        toSqlValue(
+                                selectItem.get("value"))
+                                + " AS "
+                                + formatAlias(
+                                (String) alias));
+            }
+        }
+
+        return columns;
+    }
+
+    // =========================================================
+    // AGGREGATE
+    // =========================================================
+
+    private String buildAggregate(
+            Map<String, Object> selectItem) {
+
+        Object aggregateObject =
+                selectItem.get("aggregate");
+
+        if (!(aggregateObject instanceof Map)) {
+            throw new IllegalArgumentException(
+                    "aggregate must be an object");
+        }
+
+        Map<String, Object> aggregate =
+                (Map<String, Object>)
+                        aggregateObject;
+
+        String function =
+                getRequiredString(
+                        aggregate,
+                        "function")
+                        .toUpperCase(Locale.ROOT);
+
+        validateAggregateFunction(function);
+
+        Object fieldObject =
+                aggregate.get("field");
+
+        String field =
+                fieldObject == null
+                        ? "*"
+                        : fieldObject.toString();
+
+        StringBuilder expression =
+                new StringBuilder();
+
+        expression
+                .append(function)
+                .append("(")
+                .append(field)
+                .append(")");
+
+        // -----------------------------------------------------
+        // PostgreSQL aggregate FILTER
+        //
+        // MAX(b.instruct_value)
+        // FILTER (WHERE ...)
+        // -----------------------------------------------------
+
+        Object filterObject =
+                aggregate.get("filter");
+
+        if (filterObject instanceof Map) {
+
+            String filterSql =
+                    handleQueryClause(
+                            (Map<String, Object>)
+                                    filterObject);
+
+            if (filterSql != null
+                    && !filterSql.isBlank()) {
+
+                expression
+                        .append(" FILTER (WHERE ")
+                        .append(filterSql)
+                        .append(")");
+            }
+        }
+
+        Object alias =
+                selectItem.get("alias");
+
+        if (alias instanceof String
+                && !((String) alias).isBlank()) {
+
+            expression
+                    .append(" AS ")
+                    .append(
+                            formatAlias(
+                                    (String) alias));
+        }
+
+        return expression.toString();
+    }
+
+    private void validateAggregateFunction(
+            String function) {
+
+        Set<String> allowed =
+                Set.of(
+                        "MAX",
+                        "MIN",
+                        "SUM",
+                        "AVG",
+                        "COUNT",
+                        "BOOL_OR",
+                        "BOOL_AND"
+                );
+
+        if (!allowed.contains(function)) {
+            throw new IllegalArgumentException(
+                    "Unsupported aggregate function: "
+                            + function);
+        }
+    }
+
+    private String formatAlias(
+            String alias) {
+
+        String value =
+                alias.trim();
+
+        if (value.matches(
+                "[A-Za-z_][A-Za-z0-9_]*")) {
+
+            return value;
+        }
+
+        return "\""
+                + value.replace(
+                "\"",
+                "\"\"")
+                + "\"";
+    }
+
+    // =========================================================
+    // FROM
+    //
+    // Screenshot-compatible:
+    //
+    // "from":"account acc"
+    //
+    // or:
+    //
+    // "from":{
+    //    "table":"account",
+    //    "alias":"acc"
+    // }
+    // =========================================================
+
+    private String extractFromClause(
+            Map<String, Object> queryRequest) {
+
+        Object fromObject =
+                queryRequest.get("from");
+
+        if (fromObject instanceof String) {
+            return (String) fromObject;
+        }
+
+        if (fromObject instanceof Map) {
+
+            Map<String, Object> fromMap =
+                    (Map<String, Object>)
+                            fromObject;
+
+            String table =
+                    (String) fromMap.get("table");
+
+            String alias =
+                    (String) fromMap.get("alias");
+
+            if (table == null
+                    || table.isBlank()) {
+
+                return null;
+            }
+
+            return alias != null
+                    && !alias.isBlank()
+                    ? table + " " + alias
+                    : table;
+        }
+
+        return null;
+    }
+
+    // =========================================================
+    // FROM + JOIN
+    // =========================================================
+
+    private String handleFromClause(
+            Map<String, Object> queryRequest,
+            Set<String> cteNames) {
+
+        String fromClause =
+                extractFromClause(queryRequest);
+
+        if (fromClause == null) {
+            throw new IllegalArgumentException(
+                    "Missing from clause in request.");
+        }
+
+        String resolvedFrom =
+                resolveTableOrCte(
+                        fromClause,
+                        cteNames);
+
+        Object joinsObject =
+                queryRequest.get("joins");
+
+        if (!(joinsObject instanceof List)) {
+            return resolvedFrom;
+        }
+
+        List<Map<String, Object>> joins =
+                (List<Map<String, Object>>)
+                        joinsObject;
+
+        StringBuilder joinClause =
+                new StringBuilder(
+                        resolvedFrom);
+
+        for (Map<String, Object> join :
+                joins) {
+
+            if (join == null) {
+                continue;
+            }
+
+            String joinType =
+                    join.get("type") == null
+                            ? "INNER"
+                            : join.get("type").toString();
+
+            String joinTableName =
+                    getRequiredString(
+                            join,
+                            "table");
+
+            String joinAlias =
+                    join.get("alias") == null
+                            ? null
+                            : join.get("alias").toString();
+
+            String normalizedType =
+                    normalizeJoinType(joinType);
+
+            String joinTable =
+                    resolveTableOrCte(
+                            joinTableName,
+                            cteNames);
+
+            joinClause
+                    .append(" ")
+                    .append(normalizedType)
+                    .append(" JOIN ")
+                    .append(joinTable);
+
+            if (joinAlias != null
+                    && !joinAlias.isBlank()) {
+
+                joinClause
+                        .append(" ")
+                        .append(joinAlias);
+            }
+
+            /*
+             * CROSS JOIN doesn't have ON.
+             */
+            if (!"CROSS".equals(normalizedType)) {
+
+                String joinCondition =
+                        getRequiredString(
+                                join,
+                                "on");
+
+                joinClause
+                        .append(" ON ")
+                        .append(joinCondition);
+            }
+        }
+
+        return joinClause.toString();
+    }
+
+    // =========================================================
+    // TABLE OR CTE
+    //
+    // This is the important CTE compatibility change.
+    // =========================================================
+
+    private String resolveTableOrCte(
+            String tableExpression,
+            Set<String> cteNames) {
+
+        if (tableExpression == null
+                || tableExpression.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Table is required");
+        }
+
+        String expression =
+                tableExpression.trim();
+
+        String[] parts =
+                expression.split("\\s+");
+
+        String table =
+                parts[0];
+
+        String alias =
+                parts.length > 1
+                        ? parts[1]
+                        : null;
+
+        boolean isCte =
+                cteNames != null
+                        && cteNames.contains(
+                        table.toLowerCase(
+                                Locale.ROOT));
+
+        String resolved;
+
+        if (isCte) {
+
+            // Do NOT prepend schema to CTE.
+            resolved = table;
+
+        } else if (table.contains(".")) {
+
+            // Already schema-qualified.
+            resolved = table;
+
+        } else {
+
+            // Existing physical table behavior.
+            resolved =
+                    tableConfig.getSchema()
+                            + "."
+                            + table;
+        }
+
+        if (alias != null
+                && !alias.isBlank()) {
+
+            resolved += " " + alias;
+        }
+
+        return resolved;
+    }
+
+    private String normalizeJoinType(
+            String joinType) {
+
+        if (joinType == null
+                || joinType.isBlank()) {
+
+            return "INNER";
+        }
+
+        String type =
+                joinType.trim()
+                        .toUpperCase(
+                                Locale.ROOT);
+
+        switch (type) {
+
+            case "JOIN":
+            case "INNER":
+            case "INNER JOIN":
+                return "INNER";
+
+            case "LEFT":
+            case "LEFT JOIN":
+                return "LEFT";
+
+            case "LEFT OUTER":
+            case "LEFT OUTER JOIN":
+                return "LEFT OUTER";
+
+            case "RIGHT":
+            case "RIGHT JOIN":
+                return "RIGHT";
+
+            case "RIGHT OUTER":
+            case "RIGHT OUTER JOIN":
+                return "RIGHT OUTER";
+
+            case "FULL":
+            case "FULL JOIN":
+                return "FULL";
+
+            case "FULL OUTER":
+            case "FULL OUTER JOIN":
+                return "FULL OUTER";
+
+            case "CROSS":
+            case "CROSS JOIN":
+                return "CROSS";
+
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported join type: "
+                                + joinType);
+        }
+    }
+
+    // =========================================================
+    // QUERY / BOOL
+    //
+    // Existing structure from screenshot.
+    // =========================================================
+
+    private String handleQueryClause(
+            Map<String, Object> queryClause) {
+
+        if (queryClause == null) {
+            return "";
+        }
+
+        Object boolObject =
+                queryClause.get("bool");
+
+        if (!(boolObject instanceof Map)) {
+            return "";
+        }
+
+        Map<String, Object> boolClause =
+                (Map<String, Object>)
+                        boolObject;
+
+        StringBuilder whereString =
+                new StringBuilder();
+
+        if (boolClause.containsKey("must")) {
+
+            Object mustObject =
+                    boolClause.get("must");
+
+            if (mustObject instanceof List) {
+
+                List<Map<String, Object>> mustClauses =
+                        (List<Map<String, Object>>)
+                                mustObject;
+
+                whereString.append(
+                        handleMustClause(
+                                mustClauses));
+            }
+        }
+
+        return whereString.toString();
+    }
+
+    // =========================================================
+    // MUST
+    //
+    // Existing match/range/between retained.
+    // IN added without changing old structures.
+    // =========================================================
+
+    private String handleMustClause(
+            List<Map<String, Object>> mustClauses) {
+
+        StringBuilder mustString =
+                new StringBuilder();
+
+        if (mustClauses == null) {
+            return "";
+        }
+
+        for (Map<String, Object> condition :
+                mustClauses) {
+
+            if (condition == null) {
+                continue;
+            }
+
+            String conditionSql =
+                    translateCondition(condition);
+
+            if (conditionSql == null
+                    || conditionSql.isBlank()) {
+
+                continue;
+            }
+
+            if (mustString.length() > 0) {
+                mustString.append(" AND ");
+            }
+
+            mustString.append(conditionSql);
+        }
+
+        return mustString.toString();
+    }
+
+    // =========================================================
+    // CONDITION
+    // =========================================================
+
+    private String translateCondition(
+            Map<String, Object> condition) {
+
+        // -----------------------------------------------------
+        // MATCH
+        // -----------------------------------------------------
+
+        if (condition.containsKey("match")) {
+
+            Map<String, Object> matchClause =
+                    (Map<String, Object>)
+                            condition.get("match");
+
+            List<String> predicates =
+                    new ArrayList<>();
+
+            for (Map.Entry<String, Object> entry :
+                    matchClause.entrySet()) {
+
+                String column =
+                        convertJsonPathToSql(
+                                entry.getKey());
+
+                Object value =
+                        entry.getValue();
+
+                if (value == null) {
+
+                    predicates.add(
+                            column + " IS NULL");
+
+                } else {
+
+                    predicates.add(
+                            column
+                                    + " = "
+                                    + toSqlValue(value));
+                }
+            }
+
+            return String.join(
+                    " AND ",
+                    predicates);
+        }
+
+        // -----------------------------------------------------
+        // RANGE
+        // -----------------------------------------------------
+
+        if (condition.containsKey("range")) {
+
+            Map<String, Object> rangeClause =
+                    (Map<String, Object>)
+                            condition.get("range");
+
+            List<String> predicates =
+                    new ArrayList<>();
+
+            for (Map.Entry<String, Object> entry :
+                    rangeClause.entrySet()) {
+
+                String column =
+                        convertJsonPathToSql(
+                                entry.getKey());
+
+                Map<String, Object> rangeValues =
+                        (Map<String, Object>)
+                                entry.getValue();
+
+                for (Map.Entry<String, Object> range :
+                        rangeValues.entrySet()) {
+
+                    String operator =
+                            convertRangeOperator(
+                                    range.getKey());
+
+                    predicates.add(
+                            column
+                                    + " "
+                                    + operator
+                                    + " "
+                                    + toSqlValue(
+                                    range.getValue()));
+                }
+            }
+
+            return String.join(
+                    " AND ",
+                    predicates);
+        }
+
+        // -----------------------------------------------------
+        // BETWEEN
+        // -----------------------------------------------------
+
+        if (condition.containsKey("between")) {
+
+            Map<String, Object> between =
+                    (Map<String, Object>)
+                            condition.get("between");
+
+            String field =
+                    convertJsonPathToSql(
+                            getRequiredString(
+                                    between,
+                                    "field"));
+
+            Object from =
+                    between.get("from");
+
+            Object to =
+                    between.get("to");
+
+            return field
+                    + " BETWEEN "
+                    + toSqlValue(from)
+                    + " AND "
+                    + toSqlValue(to);
+        }
+
+        // -----------------------------------------------------
+        // IN
+        // -----------------------------------------------------
+
+        if (condition.containsKey("in")) {
+
+            Map<String, Object> in =
+                    (Map<String, Object>)
+                            condition.get("in");
+
+            String field =
+                    convertJsonPathToSql(
+                            getRequiredString(
+                                    in,
+                                    "field"));
+
+            Object valuesObject =
+                    in.get("values");
+
+            if (!(valuesObject instanceof List)) {
+                throw new IllegalArgumentException(
+                        "IN values must be a list");
+            }
+
+            List<?> values =
+                    (List<?>) valuesObject;
+
+            if (values.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "IN values cannot be empty");
+            }
+
+            String valueList =
+                    values.stream()
+                            .map(this::toSqlValue)
+                            .collect(
+                                    Collectors.joining(", "));
+
+            return field
+                    + " IN ("
+                    + valueList
+                    + ")";
+        }
+
+        // -----------------------------------------------------
+        // IS NULL
+        //
+        // Useful for FILTER and ordinary WHERE.
+        // -----------------------------------------------------
+
+        if (condition.containsKey("isNull")) {
+
+            Object field =
+                    condition.get("isNull");
+
+            return convertJsonPathToSql(
+                    field.toString())
+                    + " IS NULL";
+        }
+
+        // -----------------------------------------------------
+        // IS NOT NULL
+        // -----------------------------------------------------
+
+        if (condition.containsKey("isNotNull")) {
+
+            Object field =
+                    condition.get("isNotNull");
+
+            return convertJsonPathToSql(
+                    field.toString())
+                    + " IS NOT NULL";
+        }
+
+        return "";
+    }
+
+    // =========================================================
+    // GROUP BY
+    // =========================================================
+
+    private void appendGroupBy(
+            StringBuilder sql,
+            Map<String, Object> request) {
+
+        Object groupByObject =
+                request.get("groupBy");
+
+        if (!(groupByObject instanceof List)) {
+            return;
+        }
+
+        List<?> groupBy =
+                (List<?>) groupByObject;
+
+        if (groupBy.isEmpty()) {
+            return;
+        }
+
+        String columns =
+                groupBy.stream()
+                        .map(Object::toString)
+                        .collect(
+                                Collectors.joining(", "));
+
+        sql
+                .append(" GROUP BY ")
+                .append(columns);
+    }
+
+    // =========================================================
+    // HAVING
+    // =========================================================
+
+    private void appendHaving(
+            StringBuilder sql,
+            Map<String, Object> request) {
+
+        Object havingObject =
+                request.get("having");
+
+        if (!(havingObject instanceof Map)) {
+            return;
+        }
+
+        String having =
+                handleQueryClause(
+                        (Map<String, Object>)
+                                havingObject);
+
+        if (having != null
+                && !having.isBlank()) {
+
+            sql
+                    .append(" HAVING ")
+                    .append(having);
+        }
+    }
+
+    // =========================================================
+    // ORDER BY
+    // =========================================================
+
+    private void appendOrderBy(
+            StringBuilder sql,
+            Map<String, Object> request) {
+
+        Object orderObject =
+                request.get("orderBy");
+
+        if (!(orderObject instanceof List)) {
+            return;
+        }
+
+        List<?> orderBy =
+                (List<?>) orderObject;
+
+        if (orderBy.isEmpty()) {
+            return;
+        }
+
+        List<String> items =
+                new ArrayList<>();
+
+        for (Object object : orderBy) {
+
+            if (object instanceof String) {
+
+                items.add(
+                        object.toString());
+
+                continue;
+            }
+
+            if (!(object instanceof Map)) {
+                continue;
+            }
+
+            Map<String, Object> order =
+                    (Map<String, Object>)
+                            object;
+
+            String field =
+                    getRequiredString(
+                            order,
+                            "field");
+
+            String direction =
+                    order.get("direction") == null
+                            ? "ASC"
+                            : order.get("direction")
+                            .toString()
+                            .toUpperCase(Locale.ROOT);
+
+            if (!direction.equals("ASC")
+                    && !direction.equals("DESC")) {
+
+                throw new IllegalArgumentException(
+                        "Invalid order direction: "
+                                + direction);
+            }
+
+            items.add(
+                    field
+                            + " "
+                            + direction);
+        }
+
+        if (!items.isEmpty()) {
+
+            sql
+                    .append(" ORDER BY ")
+                    .append(
+                            String.join(
+                                    ", ",
+                                    items));
+        }
+    }
+
+    // =========================================================
+    // SQL VALUE
+    // =========================================================
+
+    private String toSqlValue(
+            Object value) {
+
+        if (value == null) {
+            return "NULL";
+        }
+
+        if (value instanceof Number
+                || value instanceof Boolean) {
+
+            return value.toString();
+        }
+
+        return "'"
+                + value.toString()
+                .replace(
+                        "'",
+                        "''")
+                + "'";
+    }
+
+    // =========================================================
+    // LIMIT
+    // =========================================================
+
+    private int parseLimit(
+            Object value) {
+
+        int limit =
+                Integer.parseInt(
+                        value.toString());
+
+        if (limit < 0) {
+            throw new IllegalArgumentException(
+                    "Invalid limit: "
+                            + limit);
+        }
+
+        return limit;
+    }
+
+    // =========================================================
+    // OFFSET
+    // =========================================================
+
+    private int parseOffset(
+            Object value) {
+
+        int offset =
+                Integer.parseInt(
+                        value.toString());
+
+        if (offset < 0) {
+            throw new IllegalArgumentException(
+                    "Invalid offset: "
+                            + offset);
+        }
+
+        return offset;
+    }
+
+    // =========================================================
+    // RANGE OPERATOR
+    // =========================================================
+
+    private String convertRangeOperator(
+            String operator) {
+
+        switch (operator) {
+
+            case "gt":
+                return ">";
+
+            case "gte":
+                return ">=";
+
+            case "lt":
+                return "<";
+
+            case "lte":
+                return "<=";
+
+            default:
+                throw new IllegalArgumentException(
+                        "Invalid range operator: "
+                                + operator);
+        }
+    }
+
+    // =========================================================
+    // JSON PATH
+    //
+    // Keep your current implementation here if it already
+    // performs your -> / ->> conversion.
+    // =========================================================
+
+    private String convertJsonPathToSql(
+            String column) {
+
+        if (column == null
+                || column.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Column cannot be empty");
+        }
+
+        /*
+         * Your screenshot already has special handling for
+         * -> and ->>.
+         *
+         * Preserve that implementation if it is more complete.
+         */
+
+        return column;
+    }
+}
