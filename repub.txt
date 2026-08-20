@@ -1,0 +1,52 @@
+flowchart LR
+    DS1["Downstream Service 1"]
+    DS2["Downstream Service 2"]
+    MQ["MQ<br/>Republish / Rollover Event"]
+
+    subgraph BULK["Bulk Requester"]
+        BL["MQ Listener"]
+        ENR["Parse + JSON Enrichment"]
+        CAL["Calendar Lookup<br/>Calendar Code"]
+        POI["Update POI<br/>End Date"]
+        IDS["Identify impacted<br/>Calendar Codes + MRD IDs"]
+    end
+
+    TRACK[("Distribution Tracker")]
+    DB[("Master / Distribution DB")]
+    JMS["JMS<br/>Distribution Request"]
+
+    subgraph DIST["Distribution Service"]
+        DL["JMS Listener"]
+        READ["Read Latest Record"]
+        END["Get Latest End Date<br/>for Calendar Code"]
+        CHECK{"Requested Date<br/>≤ Latest End Date?"}
+        PUB["Publish"]
+        FILTER["Filter"]
+    end
+
+    DOWN["Downstream"]
+
+    DS1 -->|"1. Event"| MQ
+    DS2 -->|"1. Event"| MQ
+
+    MQ -->|"2. Listen"| BL
+    BL -->|"2a. Create Request"| TRACK
+    BL --> ENR
+    ENR --> CAL
+    CAL --> POI
+    POI -->|"2b. Update End Date / POI"| DB
+    CAL --> IDS
+    IDS -->|"2c. Calendar Code + MRD IDs"| JMS
+
+    JMS -->|"3. Pick Request"| DL
+    DL --> READ
+    READ --> DB
+    READ --> END
+    END --> CHECK
+
+    CHECK -->|"YES"| PUB
+    CHECK -->|"NO"| FILTER
+
+    PUB --> DOWN
+    PUB -->|"PUBLISHED"| TRACK
+    FILTER -->|"FILTERED + Reason"| TRACK
