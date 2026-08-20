@@ -1,0 +1,35 @@
+flowchart LR
+    ETL["ETL Services"]
+    DB[("Master / Distribution DB")]
+    JMS1["JMS / MQ<br/>Data Change Event"]
+
+    subgraph DIST["Distribution Service"]
+        L1["JMS Listener"]
+        EXT["Extract<br/>MRD ID / Calendar Code / Date"]
+        LOOK["Calendar Lookup<br/>Code + Date"]
+        JL{"JSON Logic<br/>Publish?"}
+        PUB["Publish to<br/>Downstream"]
+        FIL["Filter / Skip"]
+        ACK["Auto ACK<br/>JMS Message"]
+    end
+
+    TRACK[("Distribution Tracker")]
+
+    ETL -->|"1. Write / Update Data"| DB
+    ETL -->|"1a. Send Event"| JMS1
+
+    JMS1 -->|"2. Consume"| L1
+    L1 -->|"2a. Read business data"| DB
+    L1 --> EXT
+    EXT --> LOOK
+    LOOK -->|"Calendar / Rule Context"| JL
+
+    JL -->|"PASS"| PUB
+    JL -->|"FILTER"| FIL
+
+    PUB -->|"3. Publish"| DOWN["Downstream Services"]
+    PUB -->|"4. Success / Published"| TRACK
+    PUB --> ACK
+
+    FIL -->|"Filtered status + reason"| TRACK
+    FIL --> ACK
